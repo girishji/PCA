@@ -1,0 +1,150 @@
+---
+title: "Principal Component Analysis (PCA) from first principles"
+author: "Girish Palya"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: yes
+    number_sections: yes
+    theme: cosmo
+    highlight: tango
+---
+
+# Introduction
+
+*Dimensionality reduction* is a process of reducing the dimensions of a matrix while still preserving most of the information. Many sources of data can be represented as a matrix, where columns are variables and rows are observations. Social networks can also be represented as matrices, since any graph can be represented as a matrix. Web can also be represented as a matrix, since web can be thought of as a graph where websites are nodes and links are edges. When size of dataset is large it may be more efficient to find a "narrower" matrix with fewer rows or columns that still preserves most of the information. 
+
+Principal component analysis (PCA) is a popular technique used in dimensionality reduction. The idea is simple: We think of rows of a matrix as vectors representing points in Euclidean space. A `m`x`n` matrix will have `m` points in a `n`-dimensional space. We can "rotate" the axes of this space in a such a way that the first axis is oriented along the direction of maximum variance, second axis (being orthogonal to the first) is along the direction of next maximum variance, and so on. If we keep doing this, we will hit a plateau where subsequent axes may not capture any more variance ("information"). We can drop these less significant axes, thereby reducing the dimension of our matrix. 
+
+To illustrate, we have a `n`x`2` matrix where each row is a point in 2-D space. The axis that captures the most variance is the blue line shown blow (which happens to be the linear regression line). We can simply rotate the x-axis to align with the blue line and recalculate the coordinates of the points. If we discard the y-axis altogether, we would still have captured a good chunk of information regarding how points are "spread out". In this case dimensionality reduction results in a `n`x`1` matrix.
+
+```{r echo=FALSE, fig.height=4, fig.width=5}
+x <- rnorm(n=50, mean=10, sd=5)
+y <- rnorm(n=50, mean=1, sd=1)
+points <- matrix(c(x, y), ncol=2) %*% 
+  matrix(c(1, -1, 1, 1), ncol=2)
+par(mgp=c(1,0,0))
+plot(points, xlab='X', ylab='Y', xaxt='n', yaxt='n')
+abline(lm(X2~X1, data=data.frame(points)), col="blue")
+```
+
+
+# Using Eigenvectors for Dimensionality Reduction
+
+Recall that multiplying a matrix by a matrix of orthogonal vectors (unit vectors that are orthogonal to one another) rotates the axes of the Euclidean space. If $M$ is a `m`x`n` matrix whose rows represent a point in `n`-dimensional Euclidean space, we can compute a `n`x`n` symmetric matrix $M^TM$. Eigenvectors of a symmetric matrix are orthogonal (dot product of any two eigenvectors will be 0), and we will have `n` eigenvectors (some of them could be identical). We can construct a matrix $E$ where first column is the principal eigenvector (corresponding to the highest eigenvalue), and second column is the eigenvector corresponding to second highest eigenvalue, and so on. This matrix can be thought of as rotation in Euclidean space, and $ME$ is the transformation of original data where first axis is aligned in the direction of principal eigenvector, second axis is along the second eigenvector, and so on.
+
+It can be shown that the coordinates of points along the first axis (principal eigenvector) will have maximum variance (spread). Points can be thought of as lying along this axis with less variance along subsequent axes. Second axis will have more variance than third axis and so on. We can choose first `k` axes (columns in $E$) and to summarize the data. This is the essence of dimensional reduction. Principal components are nothing but projections of original data points along the new axes.
+
+## Find eigenvectors and eigenvalues
+
+Eigenvalues ($e$) and eigenvectors ($\lambda$) are a solution to the equation $Me = \lambda{e}$, where $M$ is a square matrix, $\lambda$ is a constant and $e$ is a nonzero column vector. Further, the determinant of $(M - \lambda{I}$ must be zero for the equation $(M - \lambda{I})e = 0$ to hold, where $I$ is an identity matrix of the same dimension as $M$. Equation $|M - \lambda{I}| = 0$ leads to polynomial of the same order as as the dimension of M. Solving for higher order polynomials is accomplished by approximation techniques.
+
+We use Power Iteration to calculate eigenpairs in $O(n^3)$ time. We first start by calculating the principal eigenvector (corresponding to highest eigenvalue). We then remove this eigenvalue from the matrix. The modified matrix will yield the next eigenvector corresponding to the second highest eigenvalue. This process is repeated until the desired eigenpairs (or all `n` eigenpairs) are found.
+
+We start with a nonzero vector $x_0$, and iterate
+\begin{align*}
+x_{k+1} := \frac{Mx_k}{\lVert Mx_k \rVert}
+\end{align*}
+where $\lVert N \rVert$ for a vector $N$ represents square root of sum of squares of the terms of $N$ (*Frobenius norm*). We can start with a unit vector for $x_0$ and substitute $x_{k+1}$ for $x_k$ in the above equation until convergence is found (until $\lVert x_k - x_{k+1} \rVert$ is less than some small chosen value). In practice, the above equation converges within a few iterations. $x$ is (approximately) the principal eigenvector of $M$. Eigenvalue is calculated from ($\lambda_1 = x^{T}Mx$). If eigenvalue is zero, corresponding eigenvector is discarded since it makes up the null space of $M$. To find the second eigenvector, we calculate a new matrix $M^{*} = M - \lambda_{1}xx^T$, and find its eigenpair. This technique is illustrated in more detail [here](http://www.mmds.org/).
+
+
+```{r}
+# Return principal eigenvector of a symmetric matrix M. 
+#   Iterate until convergence.
+principal_eigenvector <- function(M) {
+  x <- matrix(rep(1, ncol(M)))
+  for (i in 1:100) {
+    Mx <- M %*% x
+    x1 <- Mx / sqrt(sum(Mx^2))
+    if (sqrt(sum((x - x1)^2)) < 1e-5) {
+      return(x1)
+    } else {
+      x <- x1
+    }
+  }
+  return(x1)
+}
+
+# Return eigenvalue corresponding to an eigenvector
+eigenvalue <- function(M, egnvector) {
+  return((t(egnvector) %*% M %*% egnvector)[1])
+}
+
+# Modify matrix M to 'remove' the principal eigenvector
+transform <- function(M, egnvalue, egnvector) {
+  return (M - (egnvalue * egnvector %*% t(egnvector)))
+}
+
+# Return a matrix whose first column is the principal
+#   eigenvector, second column is the eigenvector 
+#   corresponding to the second highest eigenvalue, and so on.
+eigenmatrix <- function(M) {
+  em <- matrix(nrow=ncol(M), ncol=ncol(M))
+  for (column in 1:ncol(M)) {
+    egnvec <- principal_eigenvector(M)
+    egnval <- eigenvalue(M, egnvec)
+    # when eigenvalue is 0, eigenvector is undefined
+    if (egnval < 1e-5) {
+      em <- em[, -ncol(em)]
+    } else {
+      em[, column] <- egnvec
+    }
+    M <- transform(M, egnval, egnvec)
+  }
+  return(em)
+}
+```
+
+# Case study
+
+We can study the practical use of PCA by applying it to a large dataset like the [2014 National Air Toxins Assessment](https://www.epa.gov/national-air-toxics-assessment/2014-nata-assessment-results) published by the EPA. The respiratory hazard index dataset has 43 chemical pollutants (columns/variables) listed for 76673 survey tracts (rows/observations) covering all US counties.
+
+When we apply PCA to reduce the number of columns (for instance) to the dataset, we are essentially eliminating the effect of some of the chemicals (say 'formaldehyde' or 'epichlorohydrin') from further analysis. It is a matter of judgment as to what constitutes insignificant effect.
+
+```{r}
+library(rio)
+url <- paste0('https://www.epa.gov/sites/production/files/2018-08/',
+              'nata2014v2_national_resphi_by_tract_poll.xlsx')
+pollutants <- rio::import(file = url, which = 1)
+# Remove rows with aggregated data and text data
+pollutants <- pollutants[substr(pollutants$FIPS, 3, 5) != '000', -c(1:7)]
+pollutants[1:5, c(14:17)] # print few variables (for illustration)
+```
+
+
+```{r}
+dim(pollutants) # dimensions 
+```
+
+
+Since chemical concentration is measured in different units, the variance among columns is not comparable unless the values are scaled. PCA requires that the axes (numeric variables) are represented in the same scale.
+
+```{r}
+# Create a matrix of variables (pollutants) in columns, and scale values
+M <- data.matrix(scale(pollutants))
+```
+
+Find the matrix of eigenvectors ($E$). Verify that the eigenvector calculation is indeed correct, by computing $E^{T}E$. This dot product should (approximately) be an identity matrix.
+
+```{r}
+E <- eigenmatrix(t(M) %*% M)
+(t(E) %*% E)[1:5, 1:5] # print first five columns and rows (for illustration)
+```
+
+Calculate the principal components and plot the variance explained by each component. Since matrix $E$ represents rotation of the axes, matrix $ME$ represents values of observations in the new coordinate space. The first column of matrix $ME$ is along the principal eigenvector and it will capture the most variance, as shown in the following plot. Last few columns of $ME$ are less significant and therefore candidates for elimination.
+
+```{r}
+Mt <- M %*% E
+variances <- sapply(1:ncol(Mt), function(x) var(Mt[, x]))
+plot(1:ncol(M), variances,
+     xlab='Principal component (column number)', 
+     ylab='Variance')
+```
+
+
+```{r}
+plot(1:ncol(M), variances/sum(variances),
+     xlab='Principal component (column number)', 
+     ylab='Proportion of variance explained')
+```
+
